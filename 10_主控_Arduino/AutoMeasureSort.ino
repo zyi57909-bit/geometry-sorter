@@ -67,6 +67,7 @@ const unsigned int MIN_PULSE_US   = 20;
 // ============================================================================
 const unsigned long VISION_WAIT_MS   = 500;    // 发 image 后等 K230 结果的超时，超时重发
 const unsigned long RELEASE_DELAY_MS = 1000;   // 开合打开后落料停留
+const int           RETRY_MAX        = 5;      // A4：同一目标最多重试 5 次（收 NONE 或超时各算一次），之后记 MISS 放行
 
 // ============================================================================
 // 五、K230 / HMI 协议
@@ -93,6 +94,7 @@ State state = RUN;
 bool  entered = true;
 unsigned long stateStartMs = 0;
 unsigned long delayStartMs = 0;
+int   retryCount = 0;          // 连续未识别/超时次数，识别成功即清零
 
 static char  vLabel[TAG_MAX_LEN];
 static float vConf = 0.0f;
@@ -178,6 +180,9 @@ static int finishFrame() {
   char* p = vbuf; while (*p == ' ') p++;
   if (*p == '\0') { vlen = 0; vbuf[0] = '\0'; return -1; }
   if (strncmp(p, "No objects", 10) == 0) { vlen = 0; vbuf[0] = '\0'; return 0; }
+  // 接口约定：K230 未识别时回 "NONE\n"。必须在此拦掉——否则它会被当成正常标签
+  // （vLabel="NONE"、置信度默认 1.0 → 停带 + 随机落料，等于静默误动作）。
+  if (strncmp(p, "NONE", 4) == 0) { vlen = 0; vbuf[0] = '\0'; return 0; }
 
   vConf = 1.0f;
   char* sp = strchr(p, ' ');
@@ -251,11 +256,29 @@ static void updateRun() {
   int r = visionPoll();
   if (r == 1) {
     conveyorStopAll();
+    retryCount = 0;   // 识别成功，计数清零
     LOG_INFO("检测到目标: 标签=%s 置信度=%d%% → 停传送带", vLabel, (int)(vConf * 100));
     diagK230(true, (uint8_t)(atoi(vLabel) & 0xFF), (uint16_t)(vConf * 100));
     setState(DETECTED);
+  } else if (r == 0) {
+    // K230 明确回 NONE：空载/漏检。不停带，计入重试；满 5 次记 MISS 后放行。
+    retryCount++;
+    if (retryCount >= RETRY_MAX) {
+      LOG_WARN("MISS: 连续 %d 次未识别，放行并继续送带", retryCount);
+      retryCount = 0;
+    } else {
+      LOG_INFO("未识别 NONE（%d/%d），继续送带", retryCount, RETRY_MAX);
+    }
+    visionRequest(); stateStartMs = millis();
   } else if (millis() - stateStartMs >= VISION_WAIT_MS) {
-    visionRequest(); stateStartMs = millis();   // 超时/无物体 → 重发 image
+    retryCount++;   // 超时也计一次失败
+    if (retryCount >= RETRY_MAX) {
+      LOG_WARN("MISS: 连续 %d 次等待超时，放行并继续", retryCount);
+      retryCount = 0;
+    } else {
+      LOG_WARN("等待 K230 超时（%d/%d），重发 image", retryCount, RETRY_MAX);
+    }
+    visionRequest(); stateStartMs = millis();
   }
 }
 
