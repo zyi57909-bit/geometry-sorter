@@ -40,23 +40,31 @@ git config user.email "你的 GitHub 邮箱"
 
 > ⚠️ 不要把仓库放在 **OneDrive/网盘同步目录** 里，也不要让编辑器一直占着二进制文件——之前 `ji.HMI` 被进程锁死，导致读/改/入库全部失败。
 
-## 2.5 分支保护：现状与三条路
+## 2.5 分支保护（已启用）
 
-**已实测**：本仓库是**私有 + 免费账号**，GitHub 不允许开分支保护：
+2026-10-18：仓库已改为 **public**（免费账号的 public 仓库支持分支保护），`main` 保护已开启：
 
-```text
-gh api PUT .../branches/main/protection
-→ HTTP 403：Upgrade to GitHub Pro or make this repository public to enable this feature.
-```
+| 保护项 | 状态 |
+|---|---|
+| 必须走 PR 才能合并 | ✅ 是 |
+| 禁止 force push | ✅ 是 |
+| 禁止删除分支 | ✅ 是 |
+| 必须解决所有对话 | ✅ 是 |
+| 需要 N 人 approve | 当前 **0**（可以自己合并自己的 PR） |
+| 管理员也受限制 | ❌ 否（`enforce_admins=false`，紧急时可绕过） |
 
-| 路线 | 做法 | 优点 | 缺点 |
-|---|---|---|---|
-| **A（推荐）** | 申请 **GitHub Student Developer Pack**（学生免费）→ 账号升级为 Pro → 运行 `.\tools\enable-branch-protection.ps1` | 服务端强制，谁都绕不过；仓库仍是私有 | 需要学生认证（学校邮箱/学生证），通常 1~3 天 |
-| B | 把仓库改成 public | 立刻能开保护 | `ji.HMI` 是同学的作品，公开需三人同意，**不建议** |
-| **C（今天就能用）** | 每台电脑跑一次 `.\tools\install-hooks.ps1`（本地 `pre-push` 钩子） | 免费、立即生效 | 只能防误操作：`--no-verify` 或 `ALLOW_MAIN_PUSH=1` 可绕过；没装钩子的电脑不受保护 |
+- 想更严：`.\tools\enable-branch-protection.ps1 -RequireApprovals 1`，或网页 Settings → Branches 里改
+- 本地还有 **pre-push 钩子**做双保险：每台电脑 clone 后跑一次 `.\tools\install-hooks.ps1`
+- 紧急绕过（要用就说明原因）：`ALLOW_MAIN_PUSH=1 git push`
 
-> 当前状态：**C 已启用**（本机已装）；A 等你申请学生包后执行一次 `tools/enable-branch-protection.ps1` 即可。
-> 不管有没有保护，规矩不变：**main 只接受 PR**。
+### 仓库转公开后的注意事项
+
+- `ji.HMI`（同学作品）、`det_video.py`、AI 运行日志等**都对外可见**，建议告知两位同学
+- 如果有人不同意：Settings → General → Danger Zone 可改回 private，但**已被 fork / 被搜索引擎缓存的内容收不回来**
+- 仓库历史里含 Windows 用户名 `aochaoji` 和部分提交邮箱；要彻底清理需要重写 git 历史（找主控）
+- 没有 `LICENSE` = 默认"保留所有权利"，别人不能直接复用；打算开源就补一个许可证
+
+## 3 日常改动五步（命令行）
 
 ## 3 日常改动五步（命令行）
 

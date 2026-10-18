@@ -47,7 +47,9 @@ $body = @{
 } | ConvertTo-Json -Depth 5
 
 $tmp = Join-Path $env:TEMP 'branch-protection.json'
-Set-Content -LiteralPath $tmp -Value $body -Encoding utf8
+# NOTE: use ASCII (no BOM). 'Set-Content -Encoding utf8' on PowerShell 5.1 writes a BOM,
+# and gh/Go rejects BOM-prefixed JSON with "Problems parsing JSON".
+Set-Content -LiteralPath $tmp -Value $body -Encoding ascii
 
 Write-Host "== PUT repos/$Repo/branches/main/protection (approvals=$RequireApprovals)" -ForegroundColor Cyan
 & $gh api --method PUT "repos/$Repo/branches/main/protection" --input $tmp
