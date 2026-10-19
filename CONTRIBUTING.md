@@ -23,21 +23,45 @@
 
 ## 2 第一次使用（只做一次）
 
-1. 接受邀请：你会收到 GitHub 邮件 → 点 **Accept invitation**（或在仓库 Settings → Collaborators 里看）
-2. 装工具（任选）：**GitHub Desktop**（小白推荐，图形界面）或命令行 Git（本机已有）
-3. 克隆到自己电脑：
+> **仓库已 public（2026-10-18）：不需要邀请。** 任何人拿到链接就能看代码、clone、提 Issue 和 PR。
+> 只有"直接往本仓库推分支"才需要权限——两种做法见本节末尾。
+
+**1. 注册 GitHub 账号**（已有可跳过），把用户名发给主控，方便认人和分配 Issue。
+
+**2. 装工具**（任选）：**GitHub Desktop**（新手推荐，图形界面 + 自带登录）或命令行 Git。
+
+**3. 配置 git 身份**（命令行 Git 必须做，只做一次；否则提交作者是空的或乱码）：
+
+```bash
+git config --global user.name  "你的 GitHub 用户名"
+git config --global user.email "你的 GitHub 邮箱"   # 建议用 GitHub 的 noreply 邮箱
+```
+
+**4. 配置 GitHub 认证**（**最容易卡住的一步**：GitHub 早已不允许用登录密码 push）：
+
+| 方式 | 怎么做 |
+|---|---|
+| GitHub Desktop | 打开后 `Sign in to GitHub.com` 登录一次，之后自动记住 |
+| 命令行 + Git Credential Manager | 第一次 `git push` 会自动弹浏览器让授权，登录后凭据被系统记住 |
+| 手动 PAT | GitHub → Settings → Developer settings → Personal access tokens → 勾 `repo` → push 时把 token 当密码填 |
+
+**5. 克隆到自己电脑**：
 
 ```bash
 git clone https://github.com/zyi57909-bit/geometry-sorter.git
+cd geometry-sorter
+git config core.hooksPath .githooks     # 装防误推 main 的 pre-push 钩子
 ```
 
-4. 配一下身份（只做一次）：
+> Windows 上等价做法：`.\tools\install-hooks.ps1`。
+> 改文件之前先自检三条：`git config user.name` / `git config user.email` 都有值、`git status` 正常、`git push` 能推上去。
 
-```bash
-git config user.name  "你的 GitHub 用户名"
-git config user.email "你的 GitHub 邮箱"
-```
+**要"直接推分支"的两种做法：**
 
+- **加协作者**：主控在仓库 `Settings → Collaborators → Add people` 输入你的 GitHub 用户名，之后按 §3 直接 `git push -u origin HEAD`
+- **Fork 流程**（不想被加也能用）：仓库页右上角 **Fork** → clone 你自己的 fork → 改动推到自己 fork → 从 fork 向本仓库开 PR。**公开仓库用 fork 提 PR 完全不需要邀请**
+
+> ⚠️ 公开仓库 = 全世界可见：**不要提交密码、token、个人隐私路径，也不要替别人提交未公开的工程文件**；提交历史里的邮箱同样公开，介意就用 noreply 邮箱。
 > ⚠️ 不要把仓库放在 **OneDrive/网盘同步目录** 里，也不要让编辑器一直占着二进制文件——之前 `ji.HMI` 被进程锁死，导致读/改/入库全部失败。
 
 ## 2.5 分支保护（已启用）
@@ -153,7 +177,7 @@ fix(vision): color_four 取模防越界
 
 | 问题 | 找 |
 |---|---|
-| git/GitHub 操作、分支冲突 | 主控（你） |
+| git/GitHub 操作、分支冲突 | 主控 |
 | 硬件、接线、烧录、固件 | 主控 |
 | 视觉识别、K230、类别表 | 视觉同学 |
 | 串口屏、控件、波特率 | HMI 同学 |
