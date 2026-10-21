@@ -219,17 +219,21 @@ def detection():
                             out_label = [row[0] for row in det_boxes]#获取第1例标签值
                             out_score = [row[1] for row in det_boxes]#获取第2例概率列
                             o_score = max(out_score)                 #找出最大概率值
-                            o_label = labels[out_label[out_score.index(o_score)]] #找出最大概率值所对应的标签
+                            o_best = out_score.index(o_score)        #最大概率值的下标
+                            o_id = out_label[o_best]                 #数字类别 id（categories 下标）
+                            o_label = labels[o_id]                   #类别名称（仅用于屏幕显示）
                             if o_score > 0.6:
-                                uart.write(o_label + " " + str(round(o_score,2))+"\n")#利用串口将概率最大的检测结果发送至arduino
+                                # 主控约定格式：Re,<数字类别id>,<两位小数置信度>\n
+                                # 例：Re,37,0.87；主控侧 checkK230Frame() 会校验该格式
+                                uart.write("Re,%d,%.2f\n" % (o_id, o_score))
                             for det_boxe in det_boxes:
                                 x1, y1, x2, y2 = det_boxe[2],det_boxe[3],det_boxe[4],det_boxe[5]
                                 w = float(x2 - x1) * DISPLAY_WIDTH // OUT_RGB888P_WIDTH
                                 h = float(y2 - y1) * DISPLAY_HEIGHT // OUT_RGB888P_HEIGH
-                                osd_img.draw_rectangle(int(x1 * DISPLAY_WIDTH // OUT_RGB888P_WIDTH) , int(y1 * DISPLAY_HEIGHT // OUT_RGB888P_HEIGH) , int(w) , int(h) , color=color_four[det_boxe[0]][1:])
+                                osd_img.draw_rectangle(int(x1 * DISPLAY_WIDTH // OUT_RGB888P_WIDTH) , int(y1 * DISPLAY_HEIGHT // OUT_RGB888P_HEIGH) , int(w) , int(h) , color=color_four[det_boxe[0] % len(color_four)][1:])
                                 label = labels[det_boxe[0]]
                                 score = str(round(det_boxe[1],2))
-                                osd_img.draw_string_advanced( int(x1 * DISPLAY_WIDTH // OUT_RGB888P_WIDTH) , int(y1 * DISPLAY_HEIGHT // OUT_RGB888P_HEIGH)-50,32, label + " " + score , color=color_four[det_boxe[0]][1:])
+                                osd_img.draw_string_advanced( int(x1 * DISPLAY_WIDTH // OUT_RGB888P_WIDTH) , int(y1 * DISPLAY_HEIGHT // OUT_RGB888P_HEIGH)-50,32, label + " " + score , color=color_four[det_boxe[0] % len(color_four)][1:])
                                 c_x=float((x2 - x1)/2)#计算x轴中点坐标
                                 c_y=float((y2 - y1)/2)#计算y轴中点坐标
                                 print(label+"："+score)#输出标签
