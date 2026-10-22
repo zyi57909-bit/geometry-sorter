@@ -93,6 +93,31 @@ void SendEnd() {
   TJC.write(0xff);
   TJC.write(0xff);
 }
+
+/****************************************
+10.22添加用于控制启停的函数（暂时不用）
+ *****************************************/
+bool stop1 = false;   // 一级带停
+bool stop2 = false;   // 二级带停
+//void setConveyors(bool run) {
+  //digitalWrite(Out1, run ? HIGH : LOW);
+  //digitalWrite(Out2, run ? HIGH : LOW);
+  //digitalWrite(Out3, run ? HIGH : LOW);
+//}
+
+
+
+/****************************************
+10.22添加按状态统一输出
+ *****************************************/
+
+void applyConveyors() {
+  digitalWrite(Out1, stop1 ? LOW : HIGH);
+  digitalWrite(Out2, stop2 ? LOW : HIGH);
+  digitalWrite(Out3, HIGH);      // 三级不参与停带
+}
+
+
 /****************************************
   HMI 上报：t0.txt = 标签，t1.txt = 该桶数量
   （t0/t1 当前为文本控件，所以用 .txt=）
@@ -117,6 +142,10 @@ void Motor_init() {
   XmyStepper.setMaxSpeed(6400);      // 设置X轴电机最大速度，加速度，运行速度
   XmyStepper.setAcceleration(3200);
   XmyStepper.setSpeed(3200);
+
+  XmyStepper.setMinPulseWidth(20);
+  YmyStepper.setMinPulseWidth(20);
+
   YmyStepper.setMaxSpeed(6400);     // 设置y轴电机最大速度，加速度，运行速度
   YmyStepper.setAcceleration(3200);
   YmyStepper.setSpeed(3200);
@@ -246,7 +275,10 @@ void setup() {
     bucketCount[i] = 0;          // 数量清零
   }
 
-  delay(10000);                   //延时10秒等待K230开机
+
+  delay(300);
+
+//  delay(10000);                   //延时10秒等待K230开机
   digitalWrite(Out1, HIGH);       //启动传送带电机
   TJC.print("t0.txt=\"准备就绪\"");                    //向串口屏发送垃圾类别信息
   SendEnd();
@@ -257,32 +289,47 @@ void setup() {
  *****************************************/
 void loop() {
 
-  digitalWrite(Out1, HIGH);    // 启动所有电机
-  digitalWrite(Out2, HIGH);
-  digitalWrite(Out3, HIGH);
+ // digitalWrite(Out1, HIGH);    // 启动所有电机
+ // digitalWrite(Out2, HIGH);
+ // digitalWrite(Out3, HIGH);
 
-  delay(300);
+ //10.22新增条件判断是否启停
+// if (!beltStopped) {
+//  applyConveyors();     // 运行态保持启动；停带态不再每轮拉高
+//}
+/****************************************
+  10.22新增传送带判断
+ *****************************************/
 
- //////////////传感器检测程序/////////////
-  int s1 = digitalRead(SENSOR_PIN_1);
-  if (s1 == LOW && lastState1 == HIGH) {   // 从"无"到"有"的跳变
-    digitalWrite(Out1, LOW);
-  }
-  lastState1 = s1;
+int a1 = digitalRead(SENSOR_PIN_1);
+if (a1 == LOW && lastState1 == HIGH) stop1 = true;
+lastState1 = a1;
+
+int a2 = digitalRead(SENSOR_PIN_2);
+if (a2 == LOW && lastState2 == HIGH) stop2 = true;
+lastState2 = a2;
+
+applyConveyors();
+ //////////////传感器检测程序（10.22将其禁用）/////////////
+ // int s1 = digitalRead(SENSOR_PIN_1);
+ // if (s1 == LOW && lastState1 == HIGH) {   // 从"无"到"有"的跳变
+ //   digitalWrite(Out1, LOW);
+ // }
+ // lastState1 = s1;
 
   // ---- 传感器2：检测到物体就停 Out2 ----
-  int s2 = digitalRead(SENSOR_PIN_2);
-  if (s2 == LOW && lastState2 == HIGH) {
-    digitalWrite(Out2, LOW);
-  }
-  lastState2 = s2;
+ // int s2 = digitalRead(SENSOR_PIN_2);
+ // if (s2 == LOW && lastState2 == HIGH) {
+ //   digitalWrite(Out2, LOW);
+ // }
+ // lastState2 = s2;
 
-  delay(DEBOUNCE_DELAY_MS);   // 简单防抖
+ // delay(DEBOUNCE_DELAY_MS);   // 简单防抖
 
  ///////////////////////////
 
   if (Serial.available() > 0) {          // 有数据才处理
-    dataRe = Serial.readString();        // 读整串，如 "Re,45,0.87\r\n"
+    dataRe = Serial.readString();        // 读整串，如 "Re,45,0.87\r\n"         
     dataRe.trim();                       // 去掉首尾空格/\r/\n
     // ↓↓↓ [本次新增] 先用 checkK230Frame() 校验帧格式，合法才入桶 ↓↓↓
     if (dataRe.length() > 0) {
@@ -302,7 +349,7 @@ void loop() {
   delay(400);                            // 等待数据发送完成，且K230作出响应
 
   if (K230.available() > 0) {            // 有数据才处理
-    dataRe = Serial.readString();        // 读整串（注意：此处仍按你的版本读 Serial）
+    dataRe = Serial2.readString();        // 读整串（注意：此处仍按你的版本读 Serial）
     dataRe.trim();                       // 去掉首尾空格/\r/\n
     // ↓↓↓ [本次新增] 先用 checkK230Frame() 校验帧格式，合法才入桶 ↓↓↓
     if (dataRe.length() > 0) {
@@ -320,9 +367,10 @@ void loop() {
 
 
   //////////////种类1/////////////
+  byte sortCat = Category;            //10.22加的代码
   if (Category == 1) {
-    digitalWrite(Out1, LOW);          // 关闭传送带电机
-    digitalWrite(Out2, LOW);
+//    digitalWrite(Out1, LOW);          // 关闭传送带电机
+//    digitalWrite(Out2, LOW);
     //    TJC.print(str);                   //向串口屏发送垃圾类别信息
     //    SendEnd();
     XmyStepper.runToNewPosition(0); //选位，小齿轮52，大齿轮104
@@ -335,8 +383,8 @@ void loop() {
   }
   /////////////种类2/////////////
   if (Category == 2) {
-    digitalWrite(Out1, LOW);          // 关闭传送带电机
-    digitalWrite(Out2, LOW);
+//    digitalWrite(Out1, LOW);          // 关闭传送带电机
+//    digitalWrite(Out2, LOW);
     //    TJC.print(str);                   //向串口屏发送垃圾类别信息
     //    SendEnd();
     XmyStepper.runToNewPosition(267); //选位
@@ -349,8 +397,8 @@ void loop() {
   }
   /////////////种类3/////////////
   if (Category == 3) {
-    digitalWrite(Out1, LOW);          // 关闭传送带电机
-    digitalWrite(Out2, LOW);
+//    digitalWrite(Out1, LOW);          // 关闭传送带电机
+//    digitalWrite(Out2, LOW);
     //    TJC.print(str);                   //向串口屏发送垃圾类别信息
     //    SendEnd();
     XmyStepper.runToNewPosition(533); //选位
@@ -363,8 +411,8 @@ void loop() {
   }
   /////////////种类4/////////////
   if (Category == 4) {
-  digitalWrite(Out1, LOW);          // 关闭传送带电机
-  digitalWrite(Out2, LOW);
+//  digitalWrite(Out1, LOW);          // 关闭传送带电机
+//  digitalWrite(Out2, LOW);
     //    TJC.print(str);                   //向串口屏发送垃圾类别信息
     //    SendEnd();
     XmyStepper.runToNewPosition(800); //选位
@@ -378,8 +426,8 @@ void loop() {
 
   /////////////种类5/////////////
   if (Category == 5) {
-  digitalWrite(Out1, LOW);          // 关闭传送带电机
-  digitalWrite(Out2, LOW);
+//  digitalWrite(Out1, LOW);          // 关闭传送带电机
+//  digitalWrite(Out2, LOW);
     //    TJC.print(str);                   //向串口屏发送垃圾类别信息
     //    SendEnd();
     XmyStepper.runToNewPosition(1066); //选位
@@ -393,8 +441,8 @@ void loop() {
 
   /////////////种类6/////////////
   if (Category == 6) {
-    digitalWrite(Out1, LOW);          // 关闭传送带电机
-    digitalWrite(Out2, LOW);
+//    digitalWrite(Out1, LOW);          // 关闭传送带电机
+//    digitalWrite(Out2, LOW);
     //    TJC.print(str);                   //向串口屏发送垃圾类别信息
     //    SendEnd();
     XmyStepper.runToNewPosition(1333); //选位
@@ -406,9 +454,12 @@ void loop() {
 //    digitalWrite(Out1, HIGH);          //启动传送带电机
   }
 
-  delay(1000);
-  // HMI 上报已在 codeToBucket() 分配桶时完成（t0=标签，t1=该桶数量）
-
+///10.22新增修改内容
+if (sortCat != 0) {
+  stop1 = false;
+  stop2 = false;
+  applyConveyors();    // 三路一起启动
+}
   delay(1000);
 
 }
