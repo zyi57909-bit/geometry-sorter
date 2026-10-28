@@ -80,7 +80,7 @@ AccelStepper YmyStepper(motorInterfaceType, YstepPin, YdirPin);
 
 // ===============================串口约束====================================
 #define SERIAL_BAUD  115200   // Serial(USB) 调试 / 上报上位机
-#define Serial1_BAUD     9600     // Serial1(18/19) TJC 串口屏
+#define Serial1_BAUD   9600     // Serial1(18/19) TJC 串口屏
 #define Serial2_BAUD  115200   // Serial2(16/17) K230
 
 int a = 1;
@@ -122,16 +122,12 @@ void applyConveyors() {
   HMI 上报：t0.txt = 标签，t1.txt = 该桶数量
   （t0/t1 当前为文本控件，所以用 .txt=）
  *****************************************/
-void HmiReport(int tag, byte count) {
+void HmiReport(int tag) {
   TJC.print("t0.txt=\"");
   TJC.print(tag);
   TJC.print("\"");
   SendEnd();
 
-  TJC.print("t1.txt=\"");
-  TJC.print((int)count);
-  TJC.print("\"");
-  SendEnd();
 }
 /****************************************
   电机初始化参数设置
@@ -221,7 +217,7 @@ void codeToBucket(int code) {
       Serial.print(",数量");
       Serial.println(bucketCount[i]);    // 输出数量
       Category = i + 1;                  //输出桶号，用于控制分料斗转动
-      HmiReport(code, bucketCount[i]);   //HMI 上报：标签 + 该桶数量
+      HmiReport(code);   //HMI 上报：标签 + 该桶数量
       return;                  // 结束
     }
 
@@ -235,7 +231,7 @@ void codeToBucket(int code) {
       Serial.print(",数量");
       Serial.println(bucketCount[i]);   // 输出数量
       Category = i + 1;                 //输出桶号，用于控制分料斗转动
-      HmiReport(code, bucketCount[i]);  //HMI 上报：标签 + 该桶数量
+      HmiReport(code);  //HMI 上报：标签 + 该桶数量
       return;                           // 结束
     }
 }
@@ -247,7 +243,7 @@ void setup() {
   //串口波特率设置
   Serial.begin(115200);
   delay(50);
-  TJC.begin(9600);    // HMI通讯波特率为9600
+  TJC.begin(115200);    // HMI通讯波特率为9600
   delay(50);
   K230.begin(115200); //K230通讯波特率为115200
   delay(50);
@@ -280,7 +276,7 @@ void setup() {
 
 //  delay(10000);                   //延时10秒等待K230开机
   digitalWrite(Out1, HIGH);       //启动传送带电机
-  TJC.print("t0.txt=\"准备就绪\"");                    //向串口屏发送垃圾类别信息
+//  TJC.print("t0.txt=\"准备就绪\"");                    //向串口屏发送垃圾类别信息
   SendEnd();
   //  digitalWrite(Out2, HIGH);
 }
