@@ -386,9 +386,9 @@ applyConveyors();
   }
 
   K230.print("image");                   // 发送image，启动K230图像检测
-  delay(400);                            // 等待数据发送完成，且K230作出响应
+  delay(100);                         // 等待数据发送完成，且K230作出响应
 
-  if (K230.available() > 0) {            // 有数据才处理
+  if (K230.available() >= 4) {            // 有数据才处理
     dataRe = Serial2.readString();        // 读整串（注意：此处仍按你的版本读 Serial）
     dataRe.trim();                       // 去掉首尾空格/\r/\n
     // ↓↓↓ [本次新增] 先用 checkK230Frame() 校验帧格式，合法才入桶 ↓↓↓
@@ -402,7 +402,6 @@ applyConveyors();
         Serial.println(dataRe);
       }
     }
-    // ↑↑↑ [本次新增] ↑↑↑
   }
 
 
