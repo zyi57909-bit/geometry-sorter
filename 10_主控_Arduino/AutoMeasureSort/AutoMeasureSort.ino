@@ -29,6 +29,7 @@ char str[100];           //用于向HMI传送数据
 int Out1 = A1;           //Out1
 int Out2 = A2;           //Out2
 int Out3 = A3;           //Out3
+int Out4 = A4;           //Out4（分选漏斗）
 
 // 传感器 NPN 信号线引脚
 const int SENSOR_PIN_1 = 44;   // 对应 Out1
@@ -46,7 +47,7 @@ volatile bool stop2 = false;   // 二级带停
 // 定义电机硬件接口
 int MotorEn = 24;        //电机使能
 int XdirPin = 26;  //X电机方向
-int XstepPin = 10; //X电机脉冲
+int XstepPin = 10; //X电机脉冲 
 int YdirPin = 28;  //Y电机方向
 int YstepPin = 11; //Y电机脉冲
 
@@ -81,6 +82,7 @@ void SendEnd() {
 
 void applyConveyors() {
   digitalWrite(Out1, stop1 ? LOW : HIGH);
+  digitalWrite(Out4, stop1 ? LOW : HIGH);
   digitalWrite(Out2, stop2 ? LOW : HIGH);
   digitalWrite(Out3, HIGH);      // 三级不参与停带
 }
@@ -96,7 +98,7 @@ void applyConveyors() {
 // ============================================================================
 
 //传送带停带延迟：检测到物体后，带子继续走 STOP_DELAY_MS 毫秒再停（单位 ms，可改）
-const unsigned int STOP_DELAY_MS = 500;
+const unsigned int STOP_DELAY_MS = 800;
 
 ISR(TIMER3_COMPA_vect) {
   static uint8_t  prev1 = HIGH, prev2 = HIGH;   // 上一次采样电平
@@ -107,6 +109,7 @@ ISR(TIMER3_COMPA_vect) {
     left1 = STOP_DELAY_MS;        //传送带停带延迟：检测到物体1，开始 0.5s 倒计时
   } else if (left1 > 0 && --left1 == 0) {
     digitalWrite(Out1, LOW);      //传送带停带延迟：倒计时到，停 1 号传送带
+    digitalWrite(Out4, LOW);      //与1号传送带同时停止
     stop1 = true;
   }
   prev1 = r1;
@@ -316,9 +319,11 @@ void setup() {
   pinMode(Out1, OUTPUT);          // 设置端口为输出
   pinMode(Out2, OUTPUT);          // 设置端口为输出
   pinMode(Out3, OUTPUT);          // 设置端口为输出
+  pinMode(Out4, OUTPUT);          // 设置端口为输出
   digitalWrite(Out1, LOW);
   digitalWrite(Out2, LOW);
   digitalWrite(Out3, LOW);
+  digitalWrite(Out4, LOW);
 
   // 传感器 NPN 开集输出，上拉
   pinMode(SENSOR_PIN_1, INPUT_PULLUP);
@@ -337,6 +342,7 @@ void setup() {
 
 //  delay(10000);                   //延时10秒等待K230开机
   digitalWrite(Out1, HIGH);       //启动传送带电机
+  digitalWrite(Out4, HIGH);       //分选漏斗与启动传送带电机同步启动
 
   SendEnd();
 
@@ -380,9 +386,9 @@ applyConveyors();
   }
 
   K230.print("image");                   // 发送image，启动K230图像检测
-  delay(400);                            // 等待数据发送完成，且K230作出响应
+  delay(100);                         // 等待数据发送完成，且K230作出响应
 
-  if (K230.available() > 0) {            // 有数据才处理
+  if (K230.available() >= 4) {            // 有数据才处理
     dataRe = Serial2.readString();        // 读整串（注意：此处仍按你的版本读 Serial）
     dataRe.trim();                       // 去掉首尾空格/\r/\n
     // ↓↓↓ [本次新增] 先用 checkK230Frame() 校验帧格式，合法才入桶 ↓↓↓
@@ -396,7 +402,6 @@ applyConveyors();
         Serial.println(dataRe);
       }
     }
-    // ↑↑↑ [本次新增] ↑↑↑
   }
 
 
