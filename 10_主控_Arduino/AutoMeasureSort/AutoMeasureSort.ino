@@ -1,31 +1,8 @@
 /*
  * ============================================================================
  *  AutoMeasureSort.ino —— 上电自动传送 → K230 视觉检测 → 分选
- * ============================================================================
- *  板级框架基于学长已验证的 Hardware_control.ino（同型号主控板）；主流程采用
- *  非阻塞状态机（方案 B）。决策见 docs/decisions-measurement-flow.md。
- *
- *  流程（一个周期）：
- *    [上电]     立即启动三级传送带
- *    [RUN]      周期向 K230 发 "image"；物体进入视野（=到达测量工位）即被检测到
- *    [DETECTED] 收到 "标签 置信度" → 停三级传送带 → HMI 显示 + USB 串口上报
- *    [SORT]     分选电机转到位置 → [RELEASE] 开合电机打开 80°
- *    [DELAY]    落料停留 → [RESET] 开合关闭 + 分选复位 → 重启传送带 → 循环
- *
- *  关键决策：
- *    - 到位检测 = K230 视觉即到位（硬件无超声/无到位传感器）
- *    - K230 侧已改为「未检测到不返回」，只有确认检测到物体才回 "标签 置信度"
- *    - 分选 = 分选电机 6 位置 + 开合电机 80°（闭环 3200 脉冲/圈）
- *    - 上报上位机 = USB Serial + HMI 屏（不做网络）
- *
- *  依赖：AccelStepper 库。
- *
- *  ---------------------------------------------------------------------------
- *  [2026-10-21 本次改动] 只新增「K230 回帧格式校验」：
- *    - 新增 checkK230Frame()；loop 内两处解析改为先校验、后入桶
- *    - 代码中用 "★★★ [本次新增]" / "↓↓↓ [本次新增]" / "↑↑↑ [本次新增]" 标出
- *    - 其余逻辑、参数、HMI 上报均未改动
- *  ---------------------------------------------------------------------------
+ *  2026-10-26：新增 Timer3 1ms 定时器中断采样传感器（文中用 //10.26添加中断 标出）
+ *  传感器停带改为「检测到后延迟 0.5s」（文中用 //传送带停带延迟 标出）
  * ============================================================================
  */
 /****************************************
@@ -42,6 +19,7 @@ const byte NUM_BUCKETS = 6;    //桶的数量
 bool learned[NUM_BUCKETS];       // 桶是否已占用
 int  learnedCode[NUM_BUCKETS];   // 每个桶对应的物料码
 byte bucketCount[NUM_BUCKETS];   // 每个桶当前物料数量
+
 String dataRe = "";
 byte Category = 0;       //类别
 
@@ -59,9 +37,11 @@ const int SENSOR_PIN_2 = 45;   // 对应 Out2
 const long BAUD_RATE = 115200;
 const unsigned long DEBOUNCE_DELAY_MS = 200;
 
-// 记录上一次状态，用于简单防抖
-int lastState1 = HIGH;
-int lastState2 = HIGH;
+// 中断和主程序共享1 
+
+//10.26添加中断：stop1/stop2 在 Timer3 中断里被写，必须加 volatile（中断与主程序共享）
+volatile bool stop1 = false;   // 一级带停
+volatile bool stop2 = false;   // 二级带停
 
 // 定义电机硬件接口
 int MotorEn = 24;        //电机使能
@@ -79,8 +59,9 @@ AccelStepper YmyStepper(motorInterfaceType, YstepPin, YdirPin);
 //AccelStepper UmyStepper(motorInterfaceType, UstepPin, UdirPin);
 
 // ===============================串口约束====================================
+
 #define SERIAL_BAUD  115200   // Serial(USB) 调试 / 上报上位机
-#define Serial1_BAUD     9600     // Serial1(18/19) TJC 串口屏
+#define Serial1_BAUD     115200   // Serial1(18/19) TJC 串口屏
 #define Serial2_BAUD  115200   // Serial2(16/17) K230
 
 int a = 1;
@@ -93,21 +74,119 @@ void SendEnd() {
   TJC.write(0xff);
   TJC.write(0xff);
 }
+
 /****************************************
-  HMI 上报：t0.txt = 标签，t1.txt = 该桶数量
-  （t0/t1 当前为文本控件，所以用 .txt=）
+判断状态决定输出
  *****************************************/
-void HmiReport(int tag, byte count) {
+
+void applyConveyors() {
+  digitalWrite(Out1, stop1 ? LOW : HIGH);
+  digitalWrite(Out2, stop2 ? LOW : HIGH);
+  digitalWrite(Out3, HIGH);      // 三级不参与停带
+}
+
+// ============================================================================
+// 10.26添加中断：Timer3 每 1ms 采样一次 44/45 脚，检测到物体后延迟停带
+//   为什么加：主循环里有 delay()，原来每圈 1.4~8s 才读一次传感器，而物体
+//             经过传感器只有 0.1~0.3s，大部分时候都看不到 -> 传送带不会停。
+//             定时器中断不依赖主循环，采样和停带都准时。
+//   为什么判下降沿：分选完成重启传送带后，同一个物体可能还挡在传感器前，
+//             如果按"低电平就停"会在重启后 1ms 内又停住，带子一步都走不了。
+//             只认「高 -> 低」的跳变，就不会重复触发。
+// ============================================================================
+
+//传送带停带延迟：检测到物体后，带子继续走 STOP_DELAY_MS 毫秒再停（单位 ms，可改）
+const unsigned int STOP_DELAY_MS = 500;
+
+ISR(TIMER3_COMPA_vect) {
+  static uint8_t  prev1 = HIGH, prev2 = HIGH;   // 上一次采样电平
+  static uint16_t left1 = 0,    left2 = 0;      // 停带倒计时（ms），0 = 不在倒计时
+
+  uint8_t r1 = digitalRead(SENSOR_PIN_1);
+  if (prev1 == HIGH && r1 == LOW && left1 == 0) {
+    left1 = STOP_DELAY_MS;        //传送带停带延迟：检测到物体1，开始 0.5s 倒计时
+  } else if (left1 > 0 && --left1 == 0) {
+    digitalWrite(Out1, LOW);      //传送带停带延迟：倒计时到，停 1 号传送带
+    stop1 = true;
+  }
+  prev1 = r1;
+
+  uint8_t r2 = digitalRead(SENSOR_PIN_2);
+  if (prev2 == HIGH && r2 == LOW && left2 == 0) {
+    left2 = STOP_DELAY_MS;        //传送带停带延迟：检测到物体2，开始 0.5s 倒计时
+  } else if (left2 > 0 && --left2 == 0) {
+    digitalWrite(Out2, LOW);      //传送带停带延迟：倒计时到，停 2 号传送带
+    stop2 = true;
+  }
+  prev2 = r2;
+}
+
+
+/****************************************
+  映射表：13 色 × 34 形状 = 442 类（来源：对照表.xls）
+  公式：颜色 = COLORS[code % 13]，形状 = SHAPES[code / 13]
+ *****************************************/
+const char* COLORS[13] = {"红","橙","黄","绿","青","蓝","紫","黑","白","灰","棕","卡其色","粉色"};
+const char* SHAPES[34] = {
+  "半圆","方管","胶囊体","六棱台","六棱柱","镂空正方体",
+  "平行六面体","球体","三角筒","三棱台","三棱柱","三棱锥",
+  "双锥体","1/4圆","四棱台","四棱锥","椭圆","五角管",
+  "五棱台","五棱柱","五棱锥","斜三棱柱","圆环","圆台",
+  "圆筒","圆柱体","圆锥体","长方体","正八面体","正方体","斜圆柱体",
+  "五棱柱管","长方体柱管","六棱柱管"
+};
+
+// 代码 → 物体名称（如 91 → "红球体"）
+void getObjectName(int code, char* name) {
+  if (code < 0 || code >= 442) { strcpy(name, "未知"); return; }
+  strcpy(name, COLORS[code % 13]);
+  strcat(name, SHAPES[code / 13]);
+}
+
+/****************************************
+  发送图片到 p<slot>（仅新物体调用，一物体一图）
+ *****************************************/
+void sendPic(int slot, int picId) {
+  TJC.print("p");
+  TJC.print(slot);
+  TJC.print(".pic=");
+  TJC.print(picId);
+  SendEnd();
+}
+
+/****************************************
+  HMI 上报：t0.txt = 物体名称；data0 = 序号^名称^数量
+  isNew=true 时 insert 新行；false 时 up 更新原行数量
+ *****************************************/
+void sendRecord(int code, int count, int row, bool isNew) {
+  char name[48];
+  getObjectName(code, name);
+
+  // t0.txt = 当前物体名称
   TJC.print("t0.txt=\"");
-  TJC.print(tag);
+  TJC.print(name);
   TJC.print("\"");
   SendEnd();
 
-  TJC.print("t1.txt=\"");
-  TJC.print((int)count);
-  TJC.print("\"");
-  SendEnd();
+  // data0 记录
+  char content[64];
+  snprintf(content, sizeof(content), "%d^%s^%d", row + 1, name, count);
+  if (isNew) {
+    TJC.print("data0.insert(\"");
+    TJC.print(content);
+    TJC.print("\")");
+    SendEnd();
+  } else {
+    TJC.print("data0.up(\"");
+    TJC.print(content);
+    TJC.print("\",");
+    TJC.print(row);
+    TJC.print(")");
+    SendEnd();
+  }
 }
+
+
 /****************************************
   电机初始化参数设置
  *****************************************/
@@ -117,19 +196,24 @@ void Motor_init() {
   XmyStepper.setMaxSpeed(6400);      // 设置X轴电机最大速度，加速度，运行速度
   XmyStepper.setAcceleration(3200);
   XmyStepper.setSpeed(3200);
+
+  XmyStepper.setMinPulseWidth(20);
+  YmyStepper.setMinPulseWidth(20);
+
   YmyStepper.setMaxSpeed(6400);     // 设置y轴电机最大速度，加速度，运行速度
-  YmyStepper.setAcceleration(3200);
+  YmyStepper.setAcceleration(4200);
   YmyStepper.setSpeed(3200);
+  
   XmyStepper.setCurrentPosition(0);  // 设置电机的当前位置为0
-  YmyStepper.setCurrentPosition(0);
+  YmyStepper.setCurrentPosition(850);
 }
 
 // ============================================================================
-// ★★★ [本次新增] K230 回帧格式校验 ★★★
+//  K230 回帧格式校验 
 // 合法格式：Re,<标签数字>,<置信度>          例：Re,37,0.87
 //   - 必须以 "Re," 开头（防止 "Ready..." 之类误判）
 //   - 必须恰好两段：标签 + 置信度；缺段、多余逗号都判非法
-//   - 标签必须是纯数字，且范围 0..402（13 色 × 31 形状 = 403 类）
+//   - 标签必须是纯数字，且范围 0..441（13 色 × 34 形状 = 442 类）
 //   - 置信度必须是 0.00~1.00 的数字，最多一个小数点
 //   - 兼容外层括号：(Re,37,0.87)
 // 返回 true 时 label / conf 有效；返回 false 时调用方丢弃该帧并打 [WARN]
@@ -158,11 +242,11 @@ bool checkK230Frame(String frame, int &label, float &conf) {
   confStr.trim();
   if (labelStr.length() == 0 || confStr.length() == 0) return false;
 
-  // 标签：纯数字 + 范围 0..402
+  // 标签：纯数字 + 范围 0..441
   for (unsigned int i = 0; i < labelStr.length(); i++)
     if (!isDigit(labelStr[i])) return false;
   long l = labelStr.toInt();
-  if (l < 0 || l > 402) return false;
+  if (l < 0 || l > 441) return false;
 
   // 置信度：数字 + 最多一个小数点 + 范围 0.00~1.00
   bool dot = false;
@@ -182,6 +266,7 @@ bool checkK230Frame(String frame, int &label, float &conf) {
   return true;
 }
 
+
 //***********物料码转桶号函数************
 void codeToBucket(int code) {
   // 第一步：查旧
@@ -192,7 +277,7 @@ void codeToBucket(int code) {
       Serial.print(",数量");
       Serial.println(bucketCount[i]);    // 输出数量
       Category = i + 1;                  //输出桶号，用于控制分料斗转动
-      HmiReport(code, bucketCount[i]);   //HMI 上报：标签 + 该桶数量
+      sendRecord(code, bucketCount[i], i, false);   //HMI 上报：data0 数量+1
       return;                  // 结束
     }
 
@@ -206,7 +291,8 @@ void codeToBucket(int code) {
       Serial.print(",数量");
       Serial.println(bucketCount[i]);   // 输出数量
       Category = i + 1;                 //输出桶号，用于控制分料斗转动
-      HmiReport(code, bucketCount[i]);  //HMI 上报：标签 + 该桶数量
+      sendPic(i, code);                 //图片：p<槽位>.pic=代码（一物体一图）
+      sendRecord(code, bucketCount[i], i, true);  //HMI 上报：data0 新增
       return;                           // 结束
     }
 }
@@ -218,7 +304,7 @@ void setup() {
   //串口波特率设置
   Serial.begin(115200);
   delay(50);
-  TJC.begin(9600);    // HMI通讯波特率为9600
+  TJC.begin(115200);  // HMI通讯波特率为115200
   delay(50);
   K230.begin(115200); //K230通讯波特率为115200
   delay(50);
@@ -246,10 +332,20 @@ void setup() {
     bucketCount[i] = 0;          // 数量清零
   }
 
-  delay(10000);                   //延时10秒等待K230开机
+
+  delay(300);
+
+//  delay(10000);                   //延时10秒等待K230开机
   digitalWrite(Out1, HIGH);       //启动传送带电机
-  TJC.print("t0.txt=\"准备就绪\"");                    //向串口屏发送垃圾类别信息
+
   SendEnd();
+
+  //10.26添加中断：Timer3 配成 1ms 触发一次的定时器中断
+  //   16MHz / 8 分频 = 2MHz，计数 2000 次 = 1ms，到值就自动进入 TIMER3_COMPA_vect
+  TCCR3A = 0;                        // 普通模式
+  TCCR3B = _BV(WGM32) | _BV(CS11);   // CTC 模式 + 8 分频
+  OCR3A  = 1999;                     // 1ms 触发一次（0..1999 共 2000 次）
+  TIMSK3 |= _BV(OCIE3A);             // 打开比较匹配中断
   //  digitalWrite(Out2, HIGH);
 }
 /****************************************
@@ -257,32 +353,18 @@ void setup() {
  *****************************************/
 void loop() {
 
-  digitalWrite(Out1, HIGH);    // 启动所有电机
-  digitalWrite(Out2, HIGH);
-  digitalWrite(Out3, HIGH);
+/****************************************
+  传送带运行逻辑判断
+ *****************************************/
 
-  delay(300);
-
- //////////////传感器检测程序/////////////
-  int s1 = digitalRead(SENSOR_PIN_1);
-  if (s1 == LOW && lastState1 == HIGH) {   // 从"无"到"有"的跳变
-    digitalWrite(Out1, LOW);
-  }
-  lastState1 = s1;
-
-  // ---- 传感器2：检测到物体就停 Out2 ----
-  int s2 = digitalRead(SENSOR_PIN_2);
-  if (s2 == LOW && lastState2 == HIGH) {
-    digitalWrite(Out2, LOW);
-  }
-  lastState2 = s2;
-
-  delay(DEBOUNCE_DELAY_MS);   // 简单防抖
+//10.26添加中断：传感器已改由 Timer3 中断采样并直接停带（见 ISR(TIMER3_COMPA_vect)），
+// 这里原来"读到低电平就停"的写法删除，避免重启后被同一个物体立刻又停住
+applyConveyors();
 
  ///////////////////////////
 
   if (Serial.available() > 0) {          // 有数据才处理
-    dataRe = Serial.readString();        // 读整串，如 "Re,45,0.87\r\n"
+    dataRe = Serial.readString();        // 读整串，如 "Re,45,0.87\r\n"         
     dataRe.trim();                       // 去掉首尾空格/\r/\n
     // ↓↓↓ [本次新增] 先用 checkK230Frame() 校验帧格式，合法才入桶 ↓↓↓
     if (dataRe.length() > 0) {
@@ -295,14 +377,13 @@ void loop() {
         Serial.println(dataRe);
       }
     }
-    // ↑↑↑ [本次新增] ↑↑↑
   }
 
   K230.print("image");                   // 发送image，启动K230图像检测
   delay(400);                            // 等待数据发送完成，且K230作出响应
 
   if (K230.available() > 0) {            // 有数据才处理
-    dataRe = Serial.readString();        // 读整串（注意：此处仍按你的版本读 Serial）
+    dataRe = Serial2.readString();        // 读整串（注意：此处仍按你的版本读 Serial）
     dataRe.trim();                       // 去掉首尾空格/\r/\n
     // ↓↓↓ [本次新增] 先用 checkK230Frame() 校验帧格式，合法才入桶 ↓↓↓
     if (dataRe.length() > 0) {
@@ -320,95 +401,69 @@ void loop() {
 
 
   //////////////种类1/////////////
+  byte sortCat = Category;            //10.22加的代码
   if (Category == 1) {
-    digitalWrite(Out1, LOW);          // 关闭传送带电机
-    digitalWrite(Out2, LOW);
-    //    TJC.print(str);                   //向串口屏发送垃圾类别信息
-    //    SendEnd();
     XmyStepper.runToNewPosition(0); //选位，小齿轮52，大齿轮104
     delay(2000); 
-    YmyStepper.runToNewPosition(750);//虹膜开,转过20齿，30齿为1600
+    YmyStepper.runToNewPosition(0);//虹膜开,转过20齿，30齿为1600
     delay(2000); 
-    YmyStepper.runToNewPosition(0); //虹膜关
+    YmyStepper.runToNewPosition(850); //虹膜关
     Category = 0;
- //   digitalWrite(Out1, HIGH);          //启动传送带电机
   }
   /////////////种类2/////////////
   if (Category == 2) {
-    digitalWrite(Out1, LOW);          // 关闭传送带电机
-    digitalWrite(Out2, LOW);
-    //    TJC.print(str);                   //向串口屏发送垃圾类别信息
-    //    SendEnd();
-    XmyStepper.runToNewPosition(267); //选位
+    XmyStepper.runToNewPosition(325); //选位
     delay(2000); 
-    YmyStepper.runToNewPosition(750);//虹膜开
+    YmyStepper.runToNewPosition(0);//虹膜开
     delay(2000); 
-    YmyStepper.runToNewPosition(0); //虹膜关
+    YmyStepper.runToNewPosition(850); //虹膜关
     Category = 0;
- //   digitalWrite(Out1, HIGH);          //启动传送带电机
   }
   /////////////种类3/////////////
   if (Category == 3) {
-    digitalWrite(Out1, LOW);          // 关闭传送带电机
-    digitalWrite(Out2, LOW);
-    //    TJC.print(str);                   //向串口屏发送垃圾类别信息
-    //    SendEnd();
-    XmyStepper.runToNewPosition(533); //选位
+    XmyStepper.runToNewPosition(650); //选位
     delay(2000); 
-    YmyStepper.runToNewPosition(750);//虹膜开
+    YmyStepper.runToNewPosition(0);//虹膜开
     delay(2000); 
-    YmyStepper.runToNewPosition(0); //虹膜关
+    YmyStepper.runToNewPosition(750); //虹膜关
     Category = 0;
-  //  digitalWrite(Out1, HIGH);          //启动传送带电机
   }
   /////////////种类4/////////////
   if (Category == 4) {
-  digitalWrite(Out1, LOW);          // 关闭传送带电机
-  digitalWrite(Out2, LOW);
-    //    TJC.print(str);                   //向串口屏发送垃圾类别信息
-    //    SendEnd();
-    XmyStepper.runToNewPosition(800); //选位
+    XmyStepper.runToNewPosition(975); //选位
     delay(2000); 
-    YmyStepper.runToNewPosition(750);//虹膜开
+    YmyStepper.runToNewPosition(0);//虹膜开
     delay(2000); 
-    YmyStepper.runToNewPosition(0); //虹膜关
+    YmyStepper.runToNewPosition(750); //虹膜关
     Category = 0;
- //   digitalWrite(Out1, HIGH);          //启动传送带电机
   }
 
   /////////////种类5/////////////
   if (Category == 5) {
-  digitalWrite(Out1, LOW);          // 关闭传送带电机
-  digitalWrite(Out2, LOW);
-    //    TJC.print(str);                   //向串口屏发送垃圾类别信息
-    //    SendEnd();
-    XmyStepper.runToNewPosition(1066); //选位
+    XmyStepper.runToNewPosition(1300); //选位
     delay(2000); 
-    YmyStepper.runToNewPosition(750);//虹膜开
+    YmyStepper.runToNewPosition(0);//虹膜开
     delay(2000); 
-    YmyStepper.runToNewPosition(0); //虹膜关
+    YmyStepper.runToNewPosition(750); //虹膜关
     Category = 0;
- //   digitalWrite(Out1, HIGH);          //启动传送带电机
   }
 
   /////////////种类6/////////////
   if (Category == 6) {
-    digitalWrite(Out1, LOW);          // 关闭传送带电机
-    digitalWrite(Out2, LOW);
-    //    TJC.print(str);                   //向串口屏发送垃圾类别信息
-    //    SendEnd();
-    XmyStepper.runToNewPosition(1333); //选位
+    XmyStepper.runToNewPosition(1625); //选位
     delay(2000); 
-    YmyStepper.runToNewPosition(750);//虹膜开
+    YmyStepper.runToNewPosition(0);//虹膜开
     delay(2000); 
-    YmyStepper.runToNewPosition(0); //虹膜关
+    YmyStepper.runToNewPosition(750); //虹膜关
     Category = 0;
-//    digitalWrite(Out1, HIGH);          //启动传送带电机
   }
 
-  delay(1000);
-  // HMI 上报已在 codeToBucket() 分配桶时完成（t0=标签，t1=该桶数量）
-
+///循环结判断是否启动
+if (sortCat != 0) {
+  stop1 = false;
+  stop2 = false;
+  applyConveyors();    // 三路一起启动
+}
   delay(1000);
 
 }
