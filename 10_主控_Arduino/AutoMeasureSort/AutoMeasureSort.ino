@@ -47,7 +47,7 @@ volatile bool stop2 = false;   // 二级带停
 // 定义电机硬件接口
 int MotorEn = 24;        //电机使能
 int XdirPin = 26;  //X电机方向
-int XstepPin = 10; //X电机脉冲
+int XstepPin = 10; //X电机脉冲 
 int YdirPin = 28;  //Y电机方向
 int YstepPin = 11; //Y电机脉冲
 
