@@ -98,7 +98,7 @@ void applyConveyors() {
 // ============================================================================
 
 //传送带停带延迟：检测到物体后，带子继续走 STOP_DELAY_MS 毫秒再停（单位 ms，可改）
-const unsigned int STOP_DELAY_MS = 500;
+const unsigned int STOP_DELAY_MS = 800;
 
 ISR(TIMER3_COMPA_vect) {
   static uint8_t  prev1 = HIGH, prev2 = HIGH;   // 上一次采样电平
